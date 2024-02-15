@@ -1,25 +1,25 @@
 import puppeteer from 'puppeteer'
 
 type Conversation = {
-    unread: boolean, 
+    unread: boolean,
     id: number,
-    timestamp: string, 
-    from: string, 
+    timestamp: string,
+    from: string,
     latestMsgText: string
 }
 class MessageService {
     private page: puppeteer.Page
-    constructor (page: puppeteer.Page) {
+    constructor(page: puppeteer.Page) {
         this.page = page
     }
 
     async getInbox() {
         // TODO: add pagination
-        await this.page.waitForNavigation({ waitUntil: 'load' })
+        await this.page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         await this.page.waitForSelector('body > mw-app > mw-bootstrap > div > main > mw-main-container > div > mw-main-nav > mws-conversations-list > nav > div.conv-container.ng-star-inserted > mws-conversation-list-item')
 
         const inbox = await this.page.evaluate(() => {
-            function evalConvoElement (conversation: Element) {
+            function evalConvoElement(conversation: Element) {
                 const props: Conversation = {
                     unread: false, // querySelector find .unread class
                     id: 0, // href of a tag
@@ -28,11 +28,11 @@ class MessageService {
                     latestMsgText: '' // querySelector('mws-conversation-snippet').innerText
                 }
                 props.unread = conversation.querySelector('.unread') ? true : false
-                
+
                 const regex = /conversations\/(\d{1,})/g
                 const chatUrl = conversation.querySelector('a').href
                 props.id = parseInt(chatUrl.match(regex)[0].split('conversations/')[1])
-                
+
                 if (conversation.querySelector('mws-relative-timestamp').childElementCount > 0) {
                     props.timestamp = conversation.querySelector('mws-relative-timestamp > .ng-star-inserted').getAttribute('aria-label')
                 } else {
@@ -58,8 +58,65 @@ class MessageService {
         })
         return inbox
     }
+    async preloadMessageChannel(to: string) {
+        console.log(`Preloading message channel with ${to.toString()}...`);
+        await this.page.waitForNavigation({ waitUntil: 'load' });
+        await this.page.waitForXPath('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-main-nav/mws-conversations-list', { timeout: 5000 });
 
-    async sendMessage (to: string, text: string) {
+        console.log('Found initial message list');
+        try {
+            const foundChannelHandle = await this.page.waitForXPath(`//span[contains(., '${to.toString()}')]`, { timeout: 5000 });
+            console.log(`Found previous conversation with ${to.toString()}`);
+            const element = await foundChannelHandle.evaluateHandle((node) => node);
+            await element.click();
+            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+        } catch (e) {
+            console.log(`No previous conversation found with ${to.toString()}... creating a new chat`);
+            const newChatBtn = await this.page.$('body > mw-app > mw-bootstrap > div > main > mw-main-container > div > mw-main-nav > div > mw-fab-link > a');
+            console.log('Found New Chat Button!');
+            await newChatBtn.click();
+            console.log('New chat clicked!');
+
+            await this.page.waitForXPath('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-new-conversation-container/mw-new-conversation-sub-header/div/div[2]/mw-contact-chips-input/div/div/input', { timeout: 5000 });
+            console.log('Found number input');
+
+            let numberInput = await this.page.$x('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-new-conversation-container/mw-new-conversation-sub-header/div/div[2]/mw-contact-chips-input/div/div/input', { timeout: 5000 });
+            console.log('Number input hooked');
+            await numberInput[0].click();
+            if (numberInput.length) {
+                console.log('Typing number...');
+                await numberInput[0].type(to);
+                console.log('Typed number');
+                const numberClick = await this.page.$("body > mw-app > mw-bootstrap > div > main > mw-main-container > div > mw-new-conversation-container > div > mw-contact-selector-button > button");
+                await numberClick.click();
+                console.log('Number submitted');
+                console.log('Looking for message input...');
+                await this.page.waitForXPath('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-conversation-container/div/div[1]/div/mws-message-compose/div/div[2]/div/div/mws-autosize-textarea/textarea', { timeout: 10000 });
+                console.log("Message input hooked!")
+            }
+        }
+        return
+    }
+
+    async sendMessage(text: string) {
+        let msgInput = await this.page.$x('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-conversation-container/div/div[1]/div/mws-message-compose/div/div[2]/div/div/mws-autosize-textarea/textarea');
+        console.log('Message input hooked');
+
+        if (msgInput.length) {
+            console.log('Typing message...');
+            await msgInput[0].type(text);
+            await this.page.keyboard.press('Enter');
+            console.log('Message sent');
+        } else {
+            console.warn('Message input not found');
+            await this.page.reload();
+            console.warn('Retrying...');
+            await this.sendMessage(text);
+        }
+        return
+    }
+
+    async sendMessageFull(to: string, text: string) {
         try {
             await this.page.waitForNavigation({ waitUntil: 'domcontentloaded' })
         } catch (err) {
@@ -95,7 +152,7 @@ class MessageService {
         // await page.waitForSelector('body > mw-app > mw-bootstrap > div > main > mw-main-container > div > mw-conversation-container > div.container.ng-tns-c39-541.ng-star-inserted > div > mws-message-compose > div > div.input-box > div > mws-autosize-textarea > textarea', { visible: true })
         try {
             await this.page.waitForXPath('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-conversation-container/div[1]/div/mws-message-compose/div/div[2]/div/mws-autosize-textarea/textarea')
-        } catch (err) {  }
+        } catch (err) { }
         // await page.waitForTimeout(2 * 1000) // remove lateer
         let msgInput = await this.page.$x('/html/body/mw-app/mw-bootstrap/div/main/mw-main-container/div/mw-conversation-container/div[1]/div/mws-message-compose/div/div[2]/div/mws-autosize-textarea/textarea')
         // console.log('MsgINput', msgInput)
@@ -107,10 +164,10 @@ class MessageService {
         } else {
             this.page.reload()
             console.warn('retrying...')
-            this.sendMessage(to, text)
+            this.sendMessageFull(to, text)
         }
         // TODO: return messageId
-        return 
+        return
     }
 }
 
